@@ -1,18 +1,17 @@
-from datetime import datetime, timezone
+from common.events import envelope
 from common.http_client import create_http_session
 import json
 class OpenMeteoClient:
+    TOPIC = "weather"
 
     def __init__(self):
 
         self.url = "https://api.open-meteo.com/v1/forecast"
-        TOPIC = "weather"
 
         self.session = create_http_session()
 
-    def fetch_weather(self):
+    def fetch(self):
 
-        events= []
 
         LOCATIONS = {
             "ha_noi": (21.0285, 105.8542),
@@ -55,7 +54,7 @@ class OpenMeteoClient:
             params = {
                 "latitude": latitude,
                 "longitude": longitude,
-                "current": [
+                "current": ",".join([
                     "temperature_2m",
                     "relative_humidity_2m",
                     "precipitation",
@@ -66,7 +65,7 @@ class OpenMeteoClient:
                     "wind_speed_10m",
                     "wind_direction_10m",
                     "wind_gusts_10m"
-                ],
+                ]),
                 "timezone": "Asia/Bangkok"
             }
 
@@ -75,23 +74,19 @@ class OpenMeteoClient:
 
             data = response.json()
 
-            event = {
-                "source": "open_meteo",
-                "event_type": "weather",
-                "location": city,
-                "latitude": data.get("latitude"),
-                "longitude": data.get("longitude"),
-                "observed_at": data.get("current", {}).get("time"),
-                "ingested_at": datetime.now(timezone.utc).isoformat(),
-                "data": data.get("current", {})
-            }
+            yield envelope(
+                "open_meteo", "weather",
+                [city, data.get("current", {}).get("time")], data,
+                context={"location_name": city},
+                revision=data.get("current", {}),
+            )
 
-            events.append(event)
-
-        return events
+    def fetch_weather(self):
+        return list(self.fetch())
 
 if __name__ == "__main__":
     client = OpenMeteoClient()
     events = client.fetch_weather()
+    
     for event in events:
         print(json.dumps(event))

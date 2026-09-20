@@ -1,23 +1,24 @@
-
-from pathlib import Path
+from confluent_kafka import KafkaException, KafkaError
 from confluent_kafka.admin import AdminClient, NewTopic
 from config.settings import setting
 
-def create_topic(name_topic: str, num_partitions: int, replication_factor: int):
 
-    admin = AdminClient({
-        "bootstrap.servers": "localhost:9092,localhost:9093,localhost:9094"
-    })
-    
-    topic = NewTopic(topic = name_topic, num_partitions = num_partitions, replication_factor= replication_factor)
+def ensure_topics(names, partitions=3, replication_factor=3):
+    admin = AdminClient({"bootstrap.servers": setting.KAFKA_BOOTSTRAP_SERVERS})
+    futures = admin.create_topics([
+        NewTopic(name, num_partitions=partitions, replication_factor=replication_factor)
+        for name in names], request_timeout=20)
+    for future in futures.values():
+        try:
+            future.result()
+        except KafkaException as exc:
+            if exc.args[0].code() != KafkaError.TOPIC_ALREADY_EXISTS:
+                raise
 
-    futures=admin.create_topics([topic])
 
-    try :
-        futures[name_topic].result()
-        print(f"Created topic: {name_topic}")
-    except Exception as e:
-        print(f"Error: {e}")
+def create_topic(name_topic, num_partitions, replication_factor):
+    ensure_topics([name_topic], num_partitions, replication_factor)
+
 
 if __name__ == "__main__":
-    create_topic(name_topic= "nasa_firms", num_partitions= 3, replication_factor=3)
+    ensure_topics(["earthquake", "weather", "air_quality", "nasa_firms"])

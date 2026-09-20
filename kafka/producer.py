@@ -1,74 +1,49 @@
 import json
-
-from config.settings import setting
+import time
 from confluent_kafka import Producer
-from api.nasa_firms import NASAFirmsClient
+from config.settings import setting
 
 
 class KafkaEventProducer:
     def __init__(self):
+        self.errors = []
         self.producer = Producer({
             "bootstrap.servers": setting.KAFKA_BOOTSTRAP_SERVERS,
             "client.id": "environment-api-producer",
-
-            "acks": "all",
-            "retries": 5,
-            "enable.idempotence": True,
-
-            "batch.size": 100_000,
-            "linger.ms": 100,
+            "acks": "all", "enable.idempotence": True,
+            "delivery.timeout.ms": 30000,
+            "batch.size": 100_000, "linger.ms": 100,
         })
 
-    @staticmethod
-    def _delivery_report(err, msg):
+    def _delivery_report(self, err, msg):
         if err:
-            print(f"[ERROR] Kafka delivery failed: {err}")
-        else:
-            print(
-                f"[OK] topic={msg.topic()} "
-                f"partition={msg.partition()} "
-                f"offset={msg.offset()}"
-            )
+            self.errors.append(str(err))
 
-    def send(
-        self,
-        topic: str,
-        key: str,
-        value: dict
-    ) -> None:
+    def send(self, topic: str, key: str, value: dict, *, on_delivery=None) -> None:
+        def delivery_report(err, msg):
+            self._delivery_report(err, msg)
+            if on_delivery is not None:
+                try:
+                    on_delivery(err, msg)
+                except Exception as exc:
+                    # Surface checkpoint failures through flush, not librdkafka callbacks.
+                    self.errors.append(f"Delivery callback failed: {type(exc).__name__}")
 
-        self.producer.produce(
-            topic=topic,
-            key=key.encode("utf-8"),
-            value=json.dumps(
-                value,
-                ensure_ascii=False,
-                default=str,
-            ).encode("utf-8"),
-
-  
-            callback=self._delivery_report
-        )
-
-        # xử lý callback + network events
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                self.producer.produce(topic=topic, key=key.encode(),
+                    value=json.dumps(value, ensure_ascii=False).encode(),
+                    callback=delivery_report)
+                break
+            except BufferError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Kafka producer queue remained full")
+                self.producer.poll(0.5)
         self.producer.poll(0)
 
     def flush(self) -> None:
-        self.producer.flush()
-
-
-if __name__ == "__main__":
-
-    client = NASAFirmsClient()
-    producer = KafkaEventProducer()
-
-    events = client.fetch()
-
-    for event in events:
-        producer.send(
-            topic="nasa_firms",
-            key=event["event_id"],
-            value=event,
-        )
-
-    producer.flush()
+        remaining = self.producer.flush(35)
+        errors, self.errors = self.errors, []
+        if remaining or errors:
+            raise RuntimeError(f"Kafka delivery unsuccessful: pending={remaining}, errors={errors}")

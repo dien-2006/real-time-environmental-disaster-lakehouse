@@ -45,5 +45,9 @@ class KafkaEventConsumer:
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Inspect raw Kafka events")
+    parser.add_argument("--topic", default="nasa_firms")
+    args = parser.parse_args()
     consumer = KafkaEventConsumer()
-    consumer.consume("nasa_firms")
+    consumer.consume(args.topic)
